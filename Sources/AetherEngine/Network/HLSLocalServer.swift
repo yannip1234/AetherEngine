@@ -102,7 +102,7 @@ protocol HLSSegmentProvider: AnyObject {
     /// Native subtitle renditions (#15): one per text track, for the master EXT-X-MEDIA:TYPE=SUBTITLES tags
     /// and the /subs_{N} endpoints. Empty unless prepareNativeSubtitles is on and the cue stores are threaded.
     /// NAMEs must be unique within the group (duplicates collapse AVFoundation's legible options).
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { get }
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] { get }
     /// Ordinal advertised as DEFAULT=YES in the master SUBTITLES group (Sodalite#32).
     var nativeSubtitleDefaultOrdinal: Int { get }
     /// Serve the SUBTITLES rendition as one whole-program .vtt (single VOD segment) instead of per-video-segment (Sodalite#32).
@@ -184,7 +184,7 @@ extension HLSSegmentProvider {
     var masterClosedCaptions: String? { nil }
     var masterAudioRendition: (language: String?, name: String)? { nil }
     var masterAudioChannels: String? { nil }
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [] }
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] { [] }
     var nativeSubtitleDefaultOrdinal: Int { 0 }
     var nativeSubtitleWholeProgram: Bool { false }
     func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? { nil }
@@ -545,14 +545,17 @@ final class HLSLocalServer: @unchecked Sendable {
     /// A relay-only server has no provider: nothing here produces segments, every byte comes
     /// from the origin, and the master is whatever the origin served.
     init(provider: HLSSegmentProvider? = nil, subResourceBaseURL: URL? = nil,
+         nativeSubtitleRendererOwnsSelection: Bool = false,
          relay: HLSOriginRelay? = nil,
          unauthenticatedHeadSeconds: TimeInterval = HLSLocalServer.unauthenticatedHeadSeconds) {
         self.provider = provider
+        self.nativeSubtitleRendererOwnsSelection = nativeSubtitleRendererOwnsSelection
         self.subResourceBaseURL = subResourceBaseURL
         self.relay = relay
         self.unauthenticatedHeadDeadline = unauthenticatedHeadSeconds
     }
 
+    private let nativeSubtitleRendererOwnsSelection: Bool
     private let unauthenticatedHeadDeadline: TimeInterval
 
     /// Allows `origin` on the relay and returns the address standing in for it, for a player
@@ -1670,14 +1673,16 @@ final class HLSLocalServer: @unchecked Sendable {
         // #316: the remote-HLS proxy hands over a finished master; there is nothing to build.
         if let staticBody = provider.staticMasterPlaylistBody { return staticBody }
         return Self.buildMasterPlaylistText(provider: provider,
-                                             subResourceBaseURL: subResourceBaseURL)
+                                             subResourceBaseURL: subResourceBaseURL,
+                                             nativeSubtitleRendererOwnsSelection: nativeSubtitleRendererOwnsSelection)
     }
 
     private func buildReducedMasterPlaylist(_ variant: MasterPlaylistVariant) -> String {
         guard let provider = provider else { return "#EXTM3U\n" }
         return Self.buildMasterPlaylistText(provider: provider,
                                              subResourceBaseURL: subResourceBaseURL,
-                                             variant: variant)
+                                             variant: variant,
+                                             nativeSubtitleRendererOwnsSelection: nativeSubtitleRendererOwnsSelection)
     }
 
     private func buildMediaPlaylist() -> String {
@@ -1701,7 +1706,8 @@ final class HLSLocalServer: @unchecked Sendable {
     /// Pure playlist builders callable without a live server instance. subResourceBaseURL emits absolute URIs for AVAssetResourceLoader; nil emits relative URIs for the HTTP workflow.
     static func buildMasterPlaylistText(provider: HLSSegmentProvider,
                                          subResourceBaseURL: URL? = nil,
-                                         variant: MasterPlaylistVariant = .primary) -> String {
+                                         variant: MasterPlaylistVariant = .primary,
+                                         nativeSubtitleRendererOwnsSelection: Bool = false) -> String {
         guard let codecs = provider.masterCodecs else {
             return "#EXTM3U\n"
         }
@@ -1764,15 +1770,21 @@ final class HLSLocalServer: @unchecked Sendable {
 
         // #15: native WebVTT subtitle renditions (separate from the A/V variant; in-band timed text is
         // non-conformant for HLS). Orthogonal to the video VIDEO-RANGE/CODECS attributes.
-        // Sodalite#32: DEFAULT=NO,AUTOSELECT=NO so AVKit never auto-selects a subtitle rendition in fullscreen
+        // Overlay default: DEFAULT=NO,AUTOSELECT=NO so AVKit never auto-selects a subtitle rendition in fullscreen
         // (the on-frame overlay owns fullscreen subtitles). The host explicitly selects the matching rendition
         // only on PiP entry and deselects it on PiP exit, so the two never double up.
         let subRenditions = provider.nativeSubtitleRenditions
         for r in subRenditions {
             var mediaAttrs = ["TYPE=SUBTITLES", "GROUP-ID=\"subs\"", "NAME=\"\(r.name)\""]
             if let lang = r.language { mediaAttrs.append("LANGUAGE=\"\(lang)\"") }
-            mediaAttrs.append(contentsOf: ["DEFAULT=NO", "AUTOSELECT=NO"])
-            // Deliberately NO FORCED=YES, even for a source-forced track: AVKit force-displays a FORCED
+            mediaAttrs.append(contentsOf: ["DEFAULT=NO", "AUTOSELECT=\(nativeSubtitleRendererOwnsSelection ? "YES" : "NO")"])
+            if nativeSubtitleRendererOwnsSelection {
+                if r.isForced { mediaAttrs.append("FORCED=YES") }
+                if r.isHearingImpaired {
+                    mediaAttrs.append("CHARACTERISTICS=\"public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound\"")
+                }
+            }
+            // Overlay default deliberately omits FORCED=YES, even for a source-forced track: AVKit force-displays a FORCED
             // rendition whose language matches the selected audio regardless of DEFAULT/AUTOSELECT and the
             // user's CC-off preference, which self-engages a rendition and contradicts the invariant above
             // (the on-frame overlay owns fullscreen subtitles; the host selects a rendition only on PiP).

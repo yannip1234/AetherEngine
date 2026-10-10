@@ -1846,6 +1846,38 @@ public final class AetherEngine: ObservableObject {
                                         origin: displayOrigin(forShift: shift))
     }
 
+    /// Convert a copied native VOD pixel timestamp to the engine's display axis.
+    /// Call synchronously on MainActor with the player/item that produced the buffer,
+    /// without awaiting between copy and conversion. This maps time only: it does not
+    /// establish decoded-frame or seek admission. Paused sessions are supported.
+    public func nativeVODDisplaySeconds(
+        forItemTime time: CMTime, player: AVPlayer, item: AVPlayerItem
+    ) -> Double? {
+        let seconds = time.seconds
+        guard seconds.isFinite,
+              playbackBackend == .native, videoRoute == .loopback, !isLive,
+              duration.isFinite, duration > 0, nativeVideoSession != nil,
+              currentAVPlayer === player, nativeHost?.avPlayer === player,
+              player.currentItem === item, currentAVPlayerItem === item,
+              item.status == .readyToPlay, sourcePresentationOrigin.isFinite,
+              presentationAxis.shiftSeconds(atItemSeconds: seconds) != nil else {
+            return nil
+        }
+        let result = displaySeconds(forPlaylistSeconds: seconds)
+        return result.isFinite ? result : nil
+    }
+
+    /// Container duration on the unshifted display axis, admitted from this load's opened probe.
+    /// Metadata trust is not proof against a malformed container's false duration.
+    public func nativeMKVDuration(player: AVPlayer, item: AVPlayerItem) -> Double? {
+        guard playbackBackend == .native, videoRoute == .loopback, !isLive,
+              nativeVideoSession != nil, sourcePresentationOrigin == 0, !displayAxisIsItemAxis,
+              currentAVPlayer === player, nativeHost?.avPlayer === player,
+              player.currentItem === item, currentAVPlayerItem === item,
+              item.status == .readyToPlay else { return nil }
+        return admittedNativeMKVDuration
+    }
+
     /// AE#446 round 2: polls for the source coming back after a window was closed with ENDLIST.
     /// Cancelled on stop; see `handleLiveOutageWindowExhausted`.
     var liveOutageResumeWatcher: Task<Void, Never>?
@@ -2032,6 +2064,7 @@ public final class AetherEngine: ObservableObject {
     /// the producer already anchors `startPosition` on (`segmentIndexForPlaylistTime`), while `sourceTime`
     /// stays true source PTS for subtitle-cue alignment. Reset to 0 on load/stop; set in onPlaylistShiftChanged.
     var sourcePresentationOrigin: Double = 0
+    private var admittedNativeMKVDuration: Double?
 
     /// AE#270: the origin this session settled on, nil before the first publish. A non-disc VOD source
     /// keeps its first one: later publishes fold producer drift into the shift, and re-reading them would
@@ -2341,6 +2374,7 @@ public final class AetherEngine: ObservableObject {
         /// Container FORCED disposition; declared as FORCED=YES on the WebVTT rendition so
         /// AVFoundation distinguishes same-language forced/full pairs.
         var isForced: Bool = false
+        var isHearingImpaired: Bool = false
         /// Phase D: bitmap (PGS/DVB/DVD) entry whose store is filled by the OCR worker /
         /// sidecar OCR fill, not by the pump tap or the side readers.
         var needsOCR: Bool = false
@@ -2366,6 +2400,9 @@ public final class AetherEngine: ObservableObject {
     /// survive PiP / AirPlay, not just the overlay. Nil when there is no 608 track or native
     /// subtitles are off. Set in the load path, cleared with the tap.
     var ccNativeStore: NativeSubtitleCueStore?
+
+    // Invalidates older asynchronous native-subtitle selection requests.
+    var nativeSubtitleSelectionRequest = UUID()
 
     /// Last ordinal the host requested via setNativeSubtitleSelected (nil after a deselect).
     /// The #93 stage-2 recovery reload swaps AVPlayerItems and legible selection is per-item,
@@ -4639,6 +4676,7 @@ public final class AetherEngine: ObservableObject {
         selectedDiscTitle = activeDiscTitleID.flatMap { id in discTitles.first { $0.id == id } }
         // Content start PTS for the software-path chapter-seek base (see sourceStartSeconds). start_time is
         // AV_NOPTS_VALUE (Int64.min) when unknown; only a positive value is a real offset.
+        admittedNativeMKVDuration = probeOpened ? probe.admittedNativeMKVDuration : nil
         let probedStartTime = probeOpened ? probe.formatStartTime : 0
         sourceStartSeconds = probedStartTime > 0 ? Double(probedStartTime) / Double(AV_TIME_BASE) : 0
         // Assemble SourceProbe now while the demuxer is open; ownership transfers to loadNative/loadSoftware
@@ -7513,6 +7551,7 @@ public final class AetherEngine: ObservableObject {
         // AE#105 / AE#270: the display origin belongs to the session that published it. Clearing it here
         // rather than only in stop() keeps a load that reuses the engine (the common path: load() runs
         // stopInternal itself) from folding the previous source's PTS origin into the new one's clock.
+        admittedNativeMKVDuration = nil
         sourcePresentationOrigin = 0
         latchedPresentationOrigin = nil
         displayAxisIsItemAxis = false

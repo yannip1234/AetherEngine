@@ -13,13 +13,16 @@ import Foundation
 /// Those add a thread when one blocks in the kernel, which is the whole difference. The task is
 /// otherwise an ordinary one: it awaits, hops to the main actor and back, and is cancelled like
 /// any other.
+// Compatibility proposal: below iOS 18/macOS 15 the existing Task.detached fallback
+// can occupy the cooperative pool with blocking work. Old-OS bounded-work validation
+// is required; these availability guards do not preserve the custom executor guarantee.
 enum BlockingWork {
     @discardableResult
     static func detached<Success: Sendable>(
         priority: TaskPriority? = nil,
         operation: sending @escaping @isolated(any) () async -> Success
     ) -> Task<Success, Never> {
-        if #available(visionOS 2, *) {
+        if #available(iOS 18, macOS 15, visionOS 2, *) {
             return Task.detached(executorPreference: BlockingExecutor.shared, priority: priority, operation: operation)
         }
         return Task.detached(priority: priority, operation: operation)
@@ -30,7 +33,7 @@ enum BlockingWork {
         priority: TaskPriority? = nil,
         operation: sending @escaping @isolated(any) () async throws -> Success
     ) -> Task<Success, any Error> {
-        if #available(visionOS 2, *) {
+        if #available(iOS 18, macOS 15, visionOS 2, *) {
             return Task.detached(executorPreference: BlockingExecutor.shared, priority: priority, operation: operation)
         }
         return Task.detached(priority: priority, operation: operation)
@@ -39,7 +42,7 @@ enum BlockingWork {
 
 /// Runs each job on the GCD global queue that matches its priority. Stateless and shared, so a
 /// task's preference never outlives what it points at.
-@available(visionOS 2, *)
+@available(iOS 18, macOS 15, visionOS 2, *)
 final class BlockingExecutor: TaskExecutor {
     static let shared = BlockingExecutor()
 

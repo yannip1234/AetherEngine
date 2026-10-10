@@ -5,9 +5,9 @@ import PackageDescription
 let package = Package(
     name: "AetherEngine",
     platforms: [
-        .iOS(.v18),
+        .iOS(.v17),
         .tvOS(.v18),
-        .macOS(.v15),
+        .macOS(.v14),
         .visionOS(.v1),
     ],
     products: [

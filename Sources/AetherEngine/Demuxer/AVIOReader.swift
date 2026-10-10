@@ -645,8 +645,9 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
     private static let winLookback = 2 * 1024 * 1024
     // Trim in batches to avoid O(n^2) memmove storm on every 256 KB read.
     private static let winTrimBatch = 4 * 1024 * 1024
-    // Forward seeks within this distance keep the live connection; beyond it, reconnect.
+    // Nearby forward seeks may reuse a fast connection, but only for a bounded wait.
     private static let seekKeepForwardLimit = 8 * 1024 * 1024
+    private static let seekKeepForwardWait: TimeInterval = 1
     // CDN stall threshold: no bytes for this long triggers reconnect. Instance-captured (see
     // `connStallTimeout`) so tests can shorten it; the shipped value is this one.
     private static let connStallTimeoutDefault: TimeInterval = 20
@@ -2086,6 +2087,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
         // #281 retest: fixed once per read, so a loop that wakes repeatedly cannot keep extending
         // its own patience for the speculative fetch.
         var tailWaitDeadline: Date?
+        var forwardSeekWait: (position: Int64, started: TimeInterval)?
         func msSince(_ t: DispatchTime) -> Double {
             Double(DispatchTime.now().uptimeNanoseconds - t.uptimeNanoseconds) / 1_000_000
         }
@@ -2345,6 +2347,7 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             let posInWindow = Int(curPosition - winStart)
             let available = window.count - posInWindow
             if available > 0 {
+                forwardSeekWait = nil
                 let copyNow = min(available, requestSize - totalRead)
                 window.copyBytes(to: buf.advanced(by: totalRead), from: posInWindow, count: copyNow)
                 position = curPosition + Int64(copyNow)
@@ -2414,9 +2417,21 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             let status = connStatus
             let retryAfter = connRetryAfter
 
-            if curPosition > frontier + Int64(Self.seekKeepForwardLimit) {
+            // A cursor beyond the downloaded frontier is a seek gap, not an ordinary
+            // sequential read. Data arrivals must not continually renew its patience.
+            let now = ProcessInfo.processInfo.systemUptime
+            if !isLive, curPosition > frontier, !ended {
+                if forwardSeekWait?.position != curPosition {
+                    forwardSeekWait = (curPosition, now)
+                }
+            } else { forwardSeekWait = nil }
+            let seekWaitRemaining = forwardSeekWait.map {
+                max(0, Self.seekKeepForwardWait - (now - $0.started))
+            }
+            if curPosition > frontier + Int64(Self.seekKeepForwardLimit)
+                || seekWaitRemaining == 0 {
                 winCond.unlock()
-                // Far-forward seek. Serve from the detour cache ONLY if the block is already
+                // Forward seek past the distance or wait budget. Use the detour cache only if already
                 // resident (e.g. the moov region the parser revisits); a genuine forward scrub
                 // misses and re-anchors the streaming window there, never chunk-serving forever.
                 if detourEligible {
@@ -2441,15 +2456,22 @@ final class AVIOReader: AVIOProvider, @unchecked Sendable {
             }
 
             if !ended {
-                // Wait for the live connection to fill forward. A false return
-                // means connStallTimeout elapsed with no data (socket stall).
+                // Wait for the connection to fill forward. Classify seek-budget expiry
+                // separately from a socket stall before charging the fault ladder.
                 let waitStart = DispatchTime.now()
-                let signaled = winCond.wait(until: min(Date(timeIntervalSinceNow: connStallTimeout), readDeadline))
+                let waitSeconds = min(connStallTimeout, seekWaitRemaining ?? connStallTimeout)
+                let signaled = winCond.wait(until: min(Date(timeIntervalSinceNow: waitSeconds), readDeadline))
                 winCond.unlock()
                 diag.recordStallWait(ms: msSince(waitStart), signaled: signaled)
                 // Check deadline before stall handling to avoid misrouting a
                 // deadline wake as a socket stall (which would reconnect).
                 if isPastReadDeadline { continue }
+                // Expiring seek patience takes the planned seek-reconnect path on the
+                // next iteration; it must not spend the socket-failure/backoff budget.
+                if let forwardSeekWait,
+                   ProcessInfo.processInfo.systemUptime - forwardSeekWait.started >= Self.seekKeepForwardWait {
+                    continue
+                }
                 if !signaled {
                     if recordReconnectAndShouldGiveUp() {
                         EngineLog.emit("[AVIOReader] \(label) stall gave up at offset \(frontier) (\(unproductiveReconnects) unproductive)\(isLive ? " [live source lost]" : "")", category: .demux)

@@ -286,6 +286,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
     /// empty falls back to per-ordinal locale names, which collapse in AVFoundation when a
     /// language repeats. Built by `AetherEngine.nativeSubtitleRenditionInfos(for:)` at load.
     var nativeSubtitleRenditionInfosForSession: [NativeSubtitleRenditionInfo] = []
+    var nativeSubtitleRendererOwnsSelection = false
 
     /// #77: in-band CC stream index + observer, re-threaded onto every producer so the tap survives
     /// seek/reload/wedge. Set before start(). -1 / nil = no CC tap.
@@ -2098,7 +2099,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
             + "duration=\(String(format: "%.1f", durationSeconds))s"
         )
 
-        let srv = HLSLocalServer(provider: prov)
+        let srv = HLSLocalServer(provider: prov, nativeSubtitleRendererOwnsSelection: nativeSubtitleRendererOwnsSelection)
         try srv.start()
         self.server = srv
 
