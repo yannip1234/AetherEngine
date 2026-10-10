@@ -170,7 +170,7 @@ final class RemoteHLSSubtitleProvider: HLSSegmentProvider, @unchecked Sendable {
 
     /// Empty on purpose: `nativeSubtitleRenditions` only feeds the master BUILDER, and this provider
     /// serves a finished master instead. The EXT-X-MEDIA tags were written by `RemoteHLSMasterRewrite`.
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [] }
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] { [] }
 
     /// Whole-program WebVTT for one sidecar. Cue times are used verbatim: this bypass has no loopback
     /// producer and therefore no playlist shift, and AVPlayer places the cues by media timestamp, so

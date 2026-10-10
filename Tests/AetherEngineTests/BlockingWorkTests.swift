@@ -67,7 +67,7 @@ struct BlockingWorkTests {
     }
 
     @Test("Job priorities map onto the matching GCD class")
-    @available(visionOS 2, *)
+    @available(iOS 18, macOS 15, visionOS 2, *)
     func priorityMapping() {
         #expect(BlockingExecutor.qos(for: JobPriority(rawValue: TaskPriority.userInitiated.rawValue)) == .userInitiated)
         #expect(BlockingExecutor.qos(for: JobPriority(rawValue: TaskPriority.utility.rawValue)) == .utility)

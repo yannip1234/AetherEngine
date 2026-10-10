@@ -270,7 +270,7 @@ final class SampleBufferRenderer: @unchecked Sendable {
     /// which is a compile error rather than a runtime nil.
     @MainActor
     func loadRenderMetrics() async -> RenderMetrics? {
-        guard #available(visionOS 1.1, *) else { return nil }
+        guard #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) else { return nil }
         let renderer = videoRenderer
         return await withCheckedContinuation { (cont: CheckedContinuation<RenderMetrics?, Never>) in
             renderer.loadVideoPerformanceMetrics { m in

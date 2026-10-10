@@ -115,7 +115,7 @@ final class SoftwarePlaybackHost {
     /// `stop()` flushes it, so the engine can hold it over the new host's startup. Falls back to the
     /// newest frame enqueued, which a layer that is not on screen is all there is of.
     func displayedFrame() -> CVPixelBuffer? {
-        if #available(visionOS 1.1, *),
+        if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *),
            let shown = renderer.displayLayer.sampleBufferRenderer.displayedPixelBuffer() {
             return shown
         }
@@ -648,7 +648,7 @@ final class SoftwarePlaybackHost {
 
     /// #315: publish the renderer layer's own `readyForDisplay` as `isVideoReadyForDisplay`.
     /// AVFoundation posts a notification for it rather than supporting KVO, and it arrived in
-    /// tvOS/iOS 17.4, macOS 14.4 and visionOS 1.1. Only visionOS still has a floor below that (1.0).
+    /// tvOS/iOS 17.4, macOS 14.4 and visionOS 1.1. iOS, macOS and visionOS have floors below that.
     /// Where it is missing the fallback is the first frame handed to the renderer
     /// (`disarmedFallbackFirstFrame`), which is one hop earlier than presentation and is documented as
     /// such on the public property.
@@ -657,7 +657,7 @@ final class SoftwarePlaybackHost {
     /// visionOS floor, which is 1.0, and that is a compile error rather than a runtime fallback.
     private func armReadyForDisplayObserver() {
         disarmReadyForDisplayObserver()
-        guard #available(visionOS 1.1, *) else { return }
+        guard #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) else { return }
         let layer = renderer.displayLayer
         readyForDisplayObserver = NotificationCenter.default.addObserver(
             forName: .AVSampleBufferDisplayLayerReadyForDisplayDidChange,
@@ -684,12 +684,12 @@ final class SoftwarePlaybackHost {
         }
     }
 
-    /// #315 fallback below visionOS 1.1, the one floor that predates `readyForDisplay` on the layer,
+    /// #315 fallback below iOS 17.4, macOS 14.4 and visionOS 1.1, before `readyForDisplay` on the layer,
     /// so the first frame the decoder hands the renderer is the closest observable. Called off-main.
     /// Mirrors the observer's list exactly: a platform named there and not here would get neither the
     /// notification nor the fallback, so it would never publish readiness at all.
     nonisolated private func noteFirstFrameEnqueuedForDisplayFallback() {
-        guard #unavailable(visionOS 1.1) else { return }
+        guard #unavailable(iOS 17.4, macOS 14.4, visionOS 1.1) else { return }
         Task { @MainActor [weak self] in self?.isVideoReadyForDisplay = true }
     }
 
@@ -3355,8 +3355,8 @@ final class SoftwarePlaybackHost {
                 ? "\(Int(layer.bounds.width))x\(Int(layer.bounds.height))" : "DETACHED"
             let r4d: String
             // #344: `*` is visionOS's declared floor (1.0), not "anything newer", and
-            // isReadyForDisplay arrived in 1.1. Name the platform or the visionOS build breaks.
-            if #available(visionOS 1.1, *) {
+            // isReadyForDisplay requires iOS 17.4, macOS 14.4 or visionOS 1.1.
+            if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) {
                 r4d = layer.isReadyForDisplay ? "y" : "n"
             } else {
                 r4d = "-"

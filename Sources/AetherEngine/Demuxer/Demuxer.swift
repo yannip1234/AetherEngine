@@ -1229,6 +1229,24 @@ public final class Demuxer: @unchecked Sendable {
             container: container)
     }
 
+    /// Raw opened-container metadata only; caller, reader and disc duration overrides are excluded.
+    var admittedNativeMKVDuration: Double? {
+        guard openProfile.declaredDurationSeconds == nil,
+              (avioProvider as? CustomIOReaderBridge)?.timeSeekableReader?.mediaDuration == nil,
+              selectedDiscTitleDurationSeconds == nil,
+              let ctx = formatContext else { return nil }
+        let index = videoStreamIndex
+        guard index >= 0, Int(index) < Int(ctx.pointee.nb_streams),
+              let stream = ctx.pointee.streams[Int(index)] else { return nil }
+        return NativeMKVDurationAdmission.duration(
+            format: containerFormatName,
+            formatStart: ctx.pointee.start_time == Int64.min ? nil : Double(ctx.pointee.start_time) / Double(AV_TIME_BASE),
+            duration: ctx.pointee.duration == Int64.min ? nil : Double(ctx.pointee.duration) / Double(AV_TIME_BASE),
+            videoStart: stream.pointee.start_time,
+            timeBaseNumerator: stream.pointee.time_base.num,
+            timeBaseDenominator: stream.pointee.time_base.den)
+    }
+
     /// AVFormatContext.bit_rate in bps, or 0 if unknown. Used by
     /// HLSVideoEngine.masterBandwidth to populate HLS BANDWIDTH attributes.
     var bitRate: Int64 {
@@ -1940,7 +1958,7 @@ public final class Demuxer: @unchecked Sendable {
         guard !DemuxerOpenProfile.labelsWithoutCompositionRepair.contains(openProfile.readerLabel),
               isSourceSeekable else { return nil }
         let index = max(-1, av_find_best_stream(ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0))
-        guard index >= 0, index < Int32(ctx.pointee.nb_streams),
+        guard index >= 0, Int(index) < Int(ctx.pointee.nb_streams),
               let stream = ctx.pointee.streams[Int(index)] else { return nil }
         guard stream.pointee.discard != AVDISCARD_ALL else { return nil }
         // #511: the same defect on a container that never had composition offsets to lose. Its

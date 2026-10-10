@@ -2098,9 +2098,39 @@ extension AetherEngine {
     }
 
 
+    /// Returns eager native subtitle choice to AVFoundation for this exact physical owner.
+    /// Requires nativeSubtitleRendererOwnsSelection and eagerNativeSubtitleReaders; overlay hosts are unchanged.
+    /// Reapply after item replacement; automatic selection never records a fixed rendition to replay.
+    public func setNativeSubtitleAutomaticSelection(player: AVPlayer, item: AVPlayerItem) async -> Bool {
+        guard !Task.isCancelled, currentAVPlayer === player, currentAVPlayerItem === item, player.currentItem === item else { return false }
+        guard loadedOptions.nativeSubtitleRendererOwnsSelection, loadedOptions.eagerNativeSubtitleReaders else { return false }
+        let generation = loadGeneration, request = UUID()
+        nativeSubtitleSelectionRequest = request
+        cancelNativeLegibleDeselectPin()
+        nativeSubtitleReanchorTask?.cancel()
+        nativeSubtitleReanchorTask = nil
+        nativeSubtitleReapplyOrdinal = nil
+        if nativeSubtitleTracks.isEmpty {
+            player.appliesMediaSelectionCriteriaAutomatically = true
+            return true
+        }
+        do {
+            let group = try await item.asset.loadMediaSelectionGroup(for: .legible)
+            guard !Task.isCancelled, nativeSubtitleSelectionRequest == request, loadGeneration == generation,
+                  currentAVPlayer === player, currentAVPlayerItem === item, player.currentItem === item else { return false }
+            player.appliesMediaSelectionCriteriaAutomatically = true
+            if let group { item.selectMediaOptionAutomatically(in: group) }
+            return true
+        } catch { return false }
+    }
+
     /// Select or deselect the native mov_text track by ordinal (#55). nil deselects all. Matches by `extendedLanguageTag` first (language-rank-aware for same-language duplicates), falls back to positional index. No-op when no legible group or ordinal out of range.
     public func setNativeSubtitleSelected(track ordinal: Int?) {
-        // Remembered before any guard: the #93 recovery reload replays the host's last request
+        // Invalid negative indices remain a no-op, never a deselection or array subscript.
+        guard ordinal.map({ $0 >= 0 }) ?? true else { return }
+        let request = UUID()
+        nativeSubtitleSelectionRequest = request
+        // Remembered before player readiness guards: the #93 recovery reload replays the host's last request
         // onto the fresh item even when this call raced a not-yet-current player.
         nativeSubtitleReapplyOrdinal = ordinal
         // #15: lazy readers, run the side-demuxer only while a native track is selected (PiP), idle otherwise.
@@ -2111,17 +2141,25 @@ extension AetherEngine {
         } else if !nativeSubtitleReadersRunToEOF {
             cancelNativeSubtitleReaders()
         }
-        guard let item = currentAVPlayer?.currentItem else { return }
-        // Capture track list; avoid capturing self to keep MainActor re-entrancy to one hop.
+        guard let player = currentAVPlayer, let item = player.currentItem else { return }
+        let generation = loadGeneration
+        let isCurrentSelection: @MainActor () -> Bool = {
+            !Task.isCancelled && self.nativeSubtitleSelectionRequest == request
+                && self.loadGeneration == generation && self.currentAVPlayer === player
+                && player.currentItem === item
+        }
+        // Snapshot the track table for this request; recheck ownership after each suspension.
         let tracks = nativeSubtitleTracks
         Task { @MainActor in
             // #15: with automatic media-selection criteria on (the default), AVKit can override/not-render an
             // explicit legible selection until a view refresh. Pin manual selection so the explicit choice
             // renders immediately and survives.
-            currentAVPlayer?.appliesMediaSelectionCriteriaAutomatically = false
+            guard isCurrentSelection() else { return }
+            player.appliesMediaSelectionCriteriaAutomatically = false
             guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return }
-            guard !group.options.isEmpty else { return }
+            guard isCurrentSelection(), !group.options.isEmpty else { return }
             guard let ordinal else {
+                guard isCurrentSelection() else { return }
                 item.select(nil, in: group)
                 return
             }
@@ -2180,6 +2218,7 @@ extension AetherEngine {
                     }
                     if stall >= 6 { exit = "stall"; break }   // ~900ms with no new cues after producing => EOF / read-ahead parked
                     try? await Task.sleep(nanoseconds: 150_000_000)
+                    guard isCurrentSelection() else { return }
                 }
                 if exit == "target", store.readMaxCueEnd() < target { exit = "deadline" }
                 let waited = Int(Date().timeIntervalSince(began) * 1000)
@@ -2215,8 +2254,10 @@ extension AetherEngine {
             // (documented workaround; the same effect a PiP round-trip had). Needs the manual-criteria pin above.
             let itemID = String(UInt(bitPattern: ObjectIdentifier(item).hashValue) & 0xffff, radix: 16)
             EngineLog.emit("[AetherEngine] native subtitle select: item=\(itemID) opt=\(option.displayName) groupOpts=\(group.options.count) criteriaAuto=\(currentAVPlayer?.appliesMediaSelectionCriteriaAutomatically ?? true) itemIsCurrent=\(currentAVPlayer?.currentItem === item)", category: .engine)
+            guard isCurrentSelection() else { return }
             item.select(nil, in: group)
             try? await Task.sleep(nanoseconds: 100_000_000)
+            guard isCurrentSelection() else { return }
             item.select(option, in: group)
             let after = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName ?? "nil"
             EngineLog.emit("[AetherEngine] native subtitle select done: selected=\(after) itemIsCurrent=\(currentAVPlayer?.currentItem === item)", category: .engine)
@@ -2226,9 +2267,10 @@ extension AetherEngine {
             var retries = 0
             while item.currentMediaSelection.selectedMediaOption(in: group) == nil,
                   retries < 4,
-                  currentAVPlayer?.currentItem === item {
+                  isCurrentSelection() {
                 retries += 1
                 try? await Task.sleep(nanoseconds: 700_000_000)
+                guard isCurrentSelection() else { return }
                 item.select(option, in: group)
                 let retried = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName ?? "nil"
                 EngineLog.emit("[AetherEngine] native subtitle select retry #\(retries): selected=\(retried)", category: .engine)
@@ -2286,6 +2328,7 @@ extension AetherEngine {
                                      externalID: track.isExternal ? track.id : nil,
                                      language: track.language,
                                      isForced: track.isForced,
+                                     isHearingImpaired: track.isHearingImpaired,
                                      needsOCR: true)
         }
     }
@@ -2307,7 +2350,8 @@ extension AetherEngine {
             return NativeSubtitleRenditionInfo(
                 language: entry.language,
                 name: n == 1 ? base : "\(base) \(n)",
-                isForced: entry.isForced
+                isForced: entry.isForced,
+                isHearingImpaired: entry.isHearingImpaired
             )
         }
     }
@@ -2488,9 +2532,9 @@ extension AetherEngine {
         nativeLegibleDeselectPinTask = Task { @MainActor [weak self] in
             guard let self,
                   let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
-                  !group.options.isEmpty else { return }
+                  !group.options.isEmpty, !Task.isCancelled else { return }
             var attempts = 0
-            while attempts < 25,
+            while attempts < 25, !Task.isCancelled,
                   self.nativeSubtitleReapplyOrdinal == nil,
                   self.currentAVPlayer?.currentItem === item {
                 if attempts == 0 || item.currentMediaSelection.selectedMediaOption(in: group) != nil {
@@ -2500,7 +2544,7 @@ extension AetherEngine {
                 attempts += 1
                 try? await Task.sleep(nanoseconds: 40_000_000)
             }
-            guard self.nativeSubtitleReapplyOrdinal == nil,
+            guard !Task.isCancelled, self.nativeSubtitleReapplyOrdinal == nil,
                   self.currentAVPlayer?.currentItem === item else { return }
             self.armNativeLegibleReselectionObserver(item: item, group: group)
         }

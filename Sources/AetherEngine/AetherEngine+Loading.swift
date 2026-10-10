@@ -1149,7 +1149,7 @@ extension AetherEngine {
             NativeSubtitleTrackEntry(sourceStreamIndex: track.isExternal ? nil : track.id,
                                      externalID: track.isExternal ? track.id : nil,
                                      language: track.language,
-                                     isForced: track.isForced)
+                                     isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
         }
         // Rendition metadata built ONCE (unique NAMEs + FORCED); the published track list and the
         // master's EXT-X-MEDIA tags must agree, and duplicate names collapse AVFoundation's
@@ -1173,6 +1173,8 @@ extension AetherEngine {
         // this true and arm a #98 rendition bound to nonexistent stream 99608.
         let hasCC608 = demuxableClosedCaptionTrack != nil
         let hasBitmapOCRTrack = !bitmapEntries.isEmpty
+        session.nativeSubtitleRendererOwnsSelection = loadedOptions.nativeSubtitleRendererOwnsSelection
+            && loadedOptions.prepareNativeSubtitles && loadedOptions.eagerNativeSubtitleReaders
         session.enableNativeSubtitleTrackForSession = loadedOptions.prepareNativeSubtitles
             && (hasTextSubtitleTrack || hasCC608 || hasBitmapOCRTrack)
         // Sodalite#32 Phase 2: tap decoders honor the host's markup preference (overlay renders styled
@@ -1219,7 +1221,7 @@ extension AetherEngine {
                 session.nativeSubtitleCueStoresForSession.append(ccStore)
                 session.nativeSubtitleLanguagesForSession.append(ccTrack.language)
                 session.nativeSubtitleRenditionInfosForSession.append(
-                    NativeSubtitleRenditionInfo(language: ccTrack.language, name: ccName, isForced: false))
+                    NativeSubtitleRenditionInfo(language: ccTrack.language, name: ccName, isForced: false, isHearingImpaired: true))
                 session.nativeSubtitleSourceStreamIndicesForSession.append(Int32(ccTrack.id))
                 nativeSubtitleTrackTable.append(
                     NativeSubtitleTrackEntry(sourceStreamIndex: ccTrack.id, language: ccTrack.language))
@@ -1305,10 +1307,12 @@ extension AetherEngine {
                 // Sodalite#32: the producer's pump tap fills these stores for the whole produced region at
                 // zero side-channel bandwidth, so the eager at-load readers (which competed with playback
                 // for the remote link at startup) are only a fallback for sessions whose tap could not arm
-                // (no demuxable stream indices, e.g. all-sidecar). The lazy reader on PiP selection stays:
+                // (no demuxable stream indices, e.g. all-sidecar). Native-renderer hosts also need eager
+                // coverage: automatic selection has no manual prefill step before AVKit fetches.
+                // The lazy reader on PiP selection stays:
                 // it covers AVKit's ~240s forward .vtt prefetch burst beyond the produced region.
                 let tapArmed = session.nativeSubtitleSourceStreamIndicesForSession.contains { $0 != nil }
-                if loadedOptions.eagerNativeSubtitleReaders && !tapArmed {
+                if loadedOptions.eagerNativeSubtitleReaders && (!tapArmed || loadedOptions.nativeSubtitleRendererOwnsSelection) {
                     // Anchor at the SESSION START POSITION (resume), not 0, and read straight to EOF (no
                     // read-ahead parking). A from-0 read behind a resume position spent the whole session
                     // catching up over a remote link and never covered the playhead (device: readMax 48s vs
@@ -1814,7 +1818,9 @@ extension AetherEngine {
                       // the HDMI route cannot, because Atmos passthrough and a stereo LPCM route
                       // report the same two channels.
                       audioIsAtmosStreamCopy: nativeVideoSession?.audioIsAtmosStreamCopy == true))
-        forceNativeLegibleDeselectedUntilHostSelects()
+        if !(loadedOptions.nativeSubtitleRendererOwnsSelection && loadedOptions.eagerNativeSubtitleReaders) {
+            forceNativeLegibleDeselectedUntilHostSelects()
+        }
         // Sodalite#175: from the session's own pick, since a track-switch reload has no active index yet.
         let sessionAudioPick = nativeVideoSession.map(\.activeAudioSourceStreamIndex).flatMap { $0 >= 0 ? Int($0) : nil }
         let audioPick = sessionAudioPick ?? audioSourceStreamIndex.flatMap { Int(exactly: $0) } ?? activeAudioTrackIndex

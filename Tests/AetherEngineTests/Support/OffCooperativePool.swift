@@ -14,7 +14,7 @@ struct OffCooperativePoolTrait: SuiteTrait, TestTrait, TestScoping {
     func provideScope(for test: Test, testCase: Test.Case?,
                       performing function: @Sendable () async throws -> Void) async throws {
         guard testCase != nil else { return try await function() }
-        if #available(visionOS 2, *) {
+        if #available(iOS 18, macOS 15, visionOS 2, *) {
             try await withTaskExecutorPreference(BlockingExecutor.shared) { try await function() }
         } else {
             try await function()

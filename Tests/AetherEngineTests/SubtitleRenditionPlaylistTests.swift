@@ -3,8 +3,8 @@ import Foundation
 @testable import AetherEngine
 
 private final class MasterMockProvider: HLSSegmentProvider, @unchecked Sendable {
-    let renditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)]
-    init(renditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)]) { self.renditions = renditions }
+    let renditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)]
+    init(renditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)]) { self.renditions = renditions }
     func initSegment() -> Data? { Data([0x00]) }
     func mediaSegment(at index: Int) -> Data? { Data([0x00]) }
     var segmentCount: Int { 1 }
@@ -12,7 +12,7 @@ private final class MasterMockProvider: HLSSegmentProvider, @unchecked Sendable 
     var playlistType: HLSPlaylistType { .vod }
     var masterCodecs: String? { "hvc1.1.6.L120.90,mp4a.40.2" }
     var masterVideoRange: HLSVideoRange? { .sdr }
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { renditions }
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] { renditions }
 }
 
 /// VOD provider with a fixed segment count + per-segment cue windows for the windowed subtitle playlist.
@@ -34,7 +34,7 @@ private final class WindowedSubsProvider: HLSSegmentProvider, @unchecked Sendabl
     var playlistType: HLSPlaylistType { .vod }
     var masterCodecs: String? { "hvc1.1.6.L120.90,mp4a.40.2" }
     var masterVideoRange: HLSVideoRange? { .sdr }
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] { [(0, "eng", "English", false)] }
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] { [(0, "eng", "English", false, false)] }
     func nativeSubtitleVTT(ordinal: Int, segmentIndex: Int) -> String? {
         guard ordinal == 0, segmentIndex >= 0, segmentIndex < segCount else { return nil }
         let start = Double(segmentIndex) * segDuration
@@ -122,7 +122,7 @@ struct SubtitleRenditionPlaylistTests {
 
     @Test("master declares SUBTITLES rendition + group when native subs present")
     func masterHasSubtitleRendition() {
-        let provider = MasterMockProvider(renditions: [(0, "eng", "English", false)])
+        let provider = MasterMockProvider(renditions: [(0, "eng", "English", false, false)])
         let m = HLSLocalServer.buildMasterPlaylistText(provider: provider)
         #expect(m.contains("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\""))
         #expect(m.contains("LANGUAGE=\"eng\""))
@@ -137,8 +137,8 @@ struct SubtitleRenditionPlaylistTests {
         // DEFAULT/AUTOSELECT and the CC-off preference, self-engaging a rendition the overlay owns
         // (Sodalite#38 follow-on: forced German track shown on German audio with subtitles off). The
         // forced/full pair stays disambiguated by NAME, so neither carries FORCED=YES.
-        let provider = MasterMockProvider(renditions: [(0, "ger", "Deutsch", true),
-                                                       (1, "ger", "Deutsch 2", false)])
+        let provider = MasterMockProvider(renditions: [(0, "ger", "Deutsch", true, false),
+                                                       (1, "ger", "Deutsch 2", false, false)])
         let m = HLSLocalServer.buildMasterPlaylistText(provider: provider)
         #expect(m.contains("NAME=\"Deutsch\",LANGUAGE=\"ger\",DEFAULT=NO,AUTOSELECT=NO,URI=\"subs_0.m3u8\""))
         #expect(m.contains("NAME=\"Deutsch 2\",LANGUAGE=\"ger\",DEFAULT=NO,AUTOSELECT=NO,URI=\"subs_1.m3u8\""))
@@ -164,8 +164,8 @@ private final class ReducedMasterMockProvider: HLSSegmentProvider, @unchecked Se
     var masterCodecs: String? { "hvc1.2.4.L150,ec-3" }
     var masterSupplementalCodecs: String? { "dvh1.08.06/db1p" }
     var masterVideoRange: HLSVideoRange? { .pq }
-    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool)] {
-        [(ordinal: 0, language: "en", name: "English", isForced: false)]
+    var nativeSubtitleRenditions: [(ordinal: Int, language: String?, name: String, isForced: Bool, isHearingImpaired: Bool)] {
+        [(ordinal: 0, language: "en", name: "English", isForced: false, isHearingImpaired: false)]
     }
 }
 
