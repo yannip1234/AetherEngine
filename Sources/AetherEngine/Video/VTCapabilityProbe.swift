@@ -89,6 +89,10 @@ enum VTCapabilityProbe {
             return .unclassifiable(reason: reason)
         }
 
+        #if targetEnvironment(simulator)
+        // A Simulator's missing hardware decoder does not establish AVPlayer format support.
+        return unclassifiable("Simulator cannot establish hardware decoder availability")
+        #else
         guard let extradata = codecpar.pointee.extradata, codecpar.pointee.extradata_size > 0 else {
             return unclassifiable("no extradata")
         }
@@ -146,6 +150,7 @@ enum VTCapabilityProbe {
             category: .engine
         )
         return ok ? .supported : .unsupported
+        #endif
     }
 
     /// True when the avcC / hvcC config record actually carries out-of-band parameter sets, i.e. enough
