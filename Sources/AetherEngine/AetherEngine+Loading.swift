@@ -322,12 +322,20 @@ extension AetherEngine {
     /// a host preserved across a native->native reload (issue #15) keeps what it was created with,
     /// which is the point, since re-creating it is what breaks AVKit's MediaRemote registration.
     func makeNativeHost() -> NativeAVPlayerHost {
+        let host: NativeAVPlayerHost
         #if os(tvOS) || os(iOS)
-        return NativeAVPlayerHost(ownsNowPlayingSession: Self.ownsNowPlaying(
+        host = NativeAVPlayerHost(ownsNowPlayingSession: Self.ownsNowPlaying(
             hostOptIn: ownsVideoNowPlayingSession, role: loadedOptions.sharedOutputRole))
         #else
-        return NativeAVPlayerHost()
+        host = NativeAVPlayerHost()
         #endif
+        host.avPlayer.acceptsExternalCommands = acceptsNativeTransportCommands
+        host.avPlayer.onCommand = { [weak self, weak host] player, item, rate in
+            guard let self, let host, self.nativeHost === host,
+                  host.avPlayer === player, player.currentItem === item else { return }
+            self.onNativeTransportCommand?(player, item, rate)
+        }
+        return host
     }
 
     /// Replay the staged Now-Playing identity onto a host, and re-assert session ownership. The

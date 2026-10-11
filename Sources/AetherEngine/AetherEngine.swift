@@ -539,6 +539,17 @@ public final class AetherEngine: ObservableObject {
     /// software or audio-only load is still activating releases the session after that activation (AE#538).
     public var deactivatesAudioSessionOnStop: Bool = false
 
+    /// Explicit commands sent through AVKit's native player. Automatic rate changes do not emit.
+    /// The callback is delivered on MainActor and fenced to the current native player and item.
+    public var onNativeTransportCommand: (@MainActor (AVPlayer, AVPlayerItem?, Float) -> Void)?
+
+    /// Presentation hosts can withhold native controls until their own decoded-frame admission.
+    /// Engine-owned transport calls remain permitted. Closing the gate retires queued commands.
+    public var acceptsNativeTransportCommands = true {
+        didSet { nativeHost?.avPlayer.acceptsExternalCommands = acceptsNativeTransportCommands }
+    }
+
+
     /// Sodalite#175: a short name for this instance ("tile2") carried by the shared-output lines and the
     /// state transitions, so a log with several engines in it can be read. nil for a lone engine.
     public var logTag: String?
