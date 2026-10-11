@@ -244,7 +244,7 @@ final class NativeAVPlayerHost {
     /// AVPlayerLayer attached to the bound AetherPlayerView; reused across replaceCurrentItem swaps.
     let playerLayer: AVPlayerLayer
 
-    let avPlayer: AVPlayer
+    let avPlayer: NativeCommandPlayer
 
     // MARK: - Private state
 
@@ -335,7 +335,7 @@ final class NativeAVPlayerHost {
          diagnosticRead: @escaping AVPlayerItemDiagnostics.Read = ItemDiagnosticSnapshot.read) {
         self.diagnosticPool = diagnosticPool
         self.diagnosticRead = diagnosticRead
-        let player = AVPlayer()
+        let player = NativeCommandPlayer()
         // Keep automaticallyWaitsToMinimizeStalling at default true: false caused permanent startup stall on 4K HEVC (rate dropped to 0 after asset.load and never resumed).
         self.avPlayer = player
         self.playerLayer = AVPlayerLayer(player: player)
@@ -655,7 +655,7 @@ final class NativeAVPlayerHost {
                             + "but player parked (swallowed play() during item swap); re-issuing play()",
                             category: .engine
                         )
-                        self.avPlayer.play()
+                        self.avPlayer.internally { self.avPlayer.play() }
                     }
                     if self.timeControlStatus == .playing {
                         // Audit NAT-103: a carried `.playing` that never changes status on its way to
@@ -1435,7 +1435,7 @@ final class NativeAVPlayerHost {
                 + String(format: "%.2f", reading.aheadSeconds) + "s)",
                 category: .engine
             )
-            self.avPlayer.playImmediately(atRate: rate)
+            self.avPlayer.internally { self.avPlayer.playImmediately(atRate: rate) }
         }
     }
 
@@ -1782,12 +1782,12 @@ final class NativeAVPlayerHost {
         // Set intent before play() so readyToPlay observer can re-assert if the replaceCurrentItem swap swallowed it.
         playIntent = true
         // Call play() immediately (no defer-until-ready): item.status never advances past .unknown until AVPlayer is told to play.
-        avPlayer.play()
+        avPlayer.internally { avPlayer.play() }
     }
 
     func pause() {
         playIntent = false
-        avPlayer.pause()
+        avPlayer.internally { avPlayer.pause() }
     }
 
     /// AE#711 follow-up: the picture on screen now, for the engine to hold over the gap an in-place
@@ -1877,7 +1877,7 @@ final class NativeAVPlayerHost {
         // The session may have been handed over while the seek was in flight; a retired session
         // must not restart the player under its successor.
         guard sessionID == sid else { return true }
-        avPlayer.play()
+        avPlayer.internally { avPlayer.play() }
         prematureEndRecoveryInFlight = false
         timeControlStatus = avPlayer.timeControlStatus
         let resumedAt = await prematureEndReading().playhead
@@ -2079,7 +2079,7 @@ final class NativeAVPlayerHost {
         // so recording the speed there is what makes it survive all of them, with no rate write in
         // anyone's resume window. Setting `rate` does not update it (AVPlayer.h), hence both.
         if value != 0 { avPlayer.defaultRate = value }
-        avPlayer.rate = value
+        avPlayer.internally { avPlayer.rate = value }
     }
 
     func setResumeRate(_ rate: Float) {
@@ -2263,7 +2263,7 @@ final class NativeAVPlayerHost {
         // Pause before item swap: keepNativeHost reload carries rate=1.0 across replaceCurrentItem; without this the new item auto-resumes and beats the waitForSwitch gate (audio leads video on episode autoplay, issue #15).
         // Clear playIntent so the previous session can't restart the next item at ITS readyToPlay.
         playIntent = false
-        avPlayer.pause()
+        avPlayer.internally { avPlayer.pause() }
         avPlayer.replaceCurrentItem(with: nil)
         playerItem = nil
         isReady = false
