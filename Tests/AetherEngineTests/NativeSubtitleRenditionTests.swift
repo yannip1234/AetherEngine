@@ -34,6 +34,21 @@ struct NativeSubtitleRenditionTests {
         #expect(infos[1].name == "Subtitle 2")
     }
 
+    @Test("external filenames survive native rendition naming without a fabricated language")
+    func externalFilenameName() {
+        let imported = AetherEngine.NativeSubtitleTrackEntry(
+            sourceStreamIndex: nil, externalID: AetherEngine.externalSubtitleTrackIDBase,
+            language: nil, name: "Movie.en.srt")
+        let infos = AetherEngine.nativeSubtitleRenditionInfos(for: [imported, imported])
+        #expect(infos[0].name == "Movie.en.srt")
+        #expect(infos[1].name == "Movie.en.srt 2")
+        #expect(infos.allSatisfy { $0.language == nil })
+        let withLanguage = AetherEngine.NativeSubtitleTrackEntry(
+            sourceStreamIndex: nil, externalID: AetherEngine.externalSubtitleTrackIDBase,
+            language: "en", name: "Chosen subtitles.vtt")
+        #expect(AetherEngine.nativeSubtitleRenditionInfos(for: [withLanguage])[0].name == "Chosen subtitles.vtt")
+    }
+
     @Test("option index resolves matroska tags against normalized AVFoundation tags by rank")
     func optionIndexSynonyms() {
         // Options as AVFoundation exposes them after HLS normalization: [de, de, en].

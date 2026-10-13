@@ -2382,6 +2382,7 @@ public final class AetherEngine: ObservableObject {
         let sourceStreamIndex: Int?
         var externalID: Int? = nil
         let language: String?
+        var name: String? = nil
         /// Container FORCED disposition; declared as FORCED=YES on the WebVTT rendition so
         /// AVFoundation distinguishes same-language forced/full pairs.
         var isForced: Bool = false
