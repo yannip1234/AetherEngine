@@ -1157,6 +1157,7 @@ extension AetherEngine {
             NativeSubtitleTrackEntry(sourceStreamIndex: track.isExternal ? nil : track.id,
                                      externalID: track.isExternal ? track.id : nil,
                                      language: track.language,
+                                     name: track.isExternal ? externalSubtitleRegistry[track.id]?.name : nil,
                                      isForced: track.isForced, isHearingImpaired: track.isHearingImpaired)
         }
         // Rendition metadata built ONCE (unique NAMEs + FORCED); the published track list and the

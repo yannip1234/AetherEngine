@@ -2374,7 +2374,8 @@ extension AetherEngine {
     ) -> [NativeSubtitleRenditionInfo] {
         var counts: [String: Int] = [:]
         return entries.enumerated().map { i, entry in
-            let base = entry.language.flatMap { Locale.current.localizedString(forIdentifier: $0) }
+            let base = entry.name.flatMap { $0.isEmpty ? nil : $0 }
+                ?? entry.language.flatMap { Locale.current.localizedString(forIdentifier: $0) }
                 ?? "Subtitle \(i + 1)"
             let n = (counts[base] ?? 0) + 1
             counts[base] = n
