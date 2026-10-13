@@ -1458,12 +1458,43 @@ extension AetherEngine {
             stores: session.nativeSubtitleCueStoresForSession,
             defaultHeaders: loadedOptions.httpHeaders)
         guard !jobs.isEmpty else { return }
-        externalNativeStoreFillTask = BlockingWork.detached(priority: .utility) { [jobs] in
+        startTrackedExternalNativeStoreFill { [jobs] in
             for job in jobs {
                 if Task.isCancelled { return }
                 await AetherEngine.runExternalSubtitleFill(job: job)
             }
         }
+    }
+
+    func startTrackedExternalNativeStoreFill(operation: @escaping @Sendable () async -> Void) {
+        externalNativeStoreFillTask?.cancel()
+        let id = UUID()
+        let task = BlockingWork.detached(priority: .utility) { [weak self] in
+            await operation()
+            await self?.externalNativeStoreFillFinished(id: id)
+        }
+        pendingExternalNativeStoreFillTasks[id] = task
+        externalNativeStoreFillTask = task
+    }
+
+    private func externalNativeStoreFillFinished(id: UUID) {
+        pendingExternalNativeStoreFillTasks.removeValue(forKey: id)
+    }
+
+    /// Stops playback and waits until current and previously cancelled external native fills release their files.
+    public func stopAndDrainExternalSubtitleReads() async {
+        stop()
+        let tasks = Array(pendingExternalNativeStoreFillTasks.values)
+        for task in tasks { task.cancel() }
+        for task in tasks { await task.value }
+    }
+
+    /// Resolves a load-declared external track's registration index to its actual native table position.
+    public func nativeExternalSubtitleOrdinal(registrationIndex: Int) -> Int? {
+        guard registrationIndex >= 0 else { return nil }
+        let (id, overflow) = Self.externalSubtitleTrackIDBase.addingReportingOverflow(registrationIndex)
+        guard !overflow else { return nil }
+        return nativeSubtitleTrackTable.firstIndex { $0.externalID == id }
     }
 
     /// #266: fill one container's stores from a single decode pass. A pass covering several streams

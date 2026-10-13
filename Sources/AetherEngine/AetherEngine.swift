@@ -2423,6 +2423,7 @@ public final class AetherEngine: ObservableObject {
 
     /// Whole-file decode tasks filling native stores for load-declared external tracks (#88).
     var externalNativeStoreFillTask: Task<Void, Never>? = nil
+    var pendingExternalNativeStoreFillTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Phase D: OCR worker state. Armed while the active subtitle is a needsOCR table entry;
     /// cursors/pending persist across deselect/reselect (no re-recognition of covered regions)

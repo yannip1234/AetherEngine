@@ -48,11 +48,12 @@ enum SubtitleDecoder {
         url: URL,
         httpHeaders: [String: String] = [:],
         preserveASSMarkup: Bool = false,
-        sourceStreamIndex: Int32? = nil
+        sourceStreamIndex: Int32? = nil,
+        localInputFormat: String? = nil
     ) async throws -> SidecarDecodeResult {
         let results = try await decode(
             url: url, httpHeaders: httpHeaders, preserveASSMarkup: preserveASSMarkup,
-            requested: sourceStreamIndex.map { [$0] }
+            requested: sourceStreamIndex.map { [$0] }, localInputFormat: localInputFormat
         )
         guard let only = results.first else { throw SubtitleDecoderError.noSubtitleStream }
         return only
@@ -81,7 +82,8 @@ enum SubtitleDecoder {
         url: URL,
         httpHeaders: [String: String],
         preserveASSMarkup: Bool,
-        requested: [Int32?]?
+        requested: [Int32?]?,
+        localInputFormat: String? = nil
     ) async throws -> [SidecarDecodeResult] {
         // Task.cancel() does NOT propagate into detached tasks (isCancelled inside always false).
         // Bridge cancellation explicitly via CancelFlag so the decode loop + AVIO reader abort promptly.
@@ -90,7 +92,8 @@ enum SubtitleDecoder {
             try await BlockingWork.detached(priority: .userInitiated) {
                 try decodeFileSync(
                     url: url, httpHeaders: httpHeaders,
-                    preserveASSMarkup: preserveASSMarkup, requested: requested, cancel: token
+                    preserveASSMarkup: preserveASSMarkup, requested: requested, cancel: token,
+                    localInputFormat: localInputFormat
                 )
             }.value
         } onCancel: {
@@ -357,9 +360,16 @@ enum SubtitleDecoder {
 
     private static func decodeFileSync(
         url: URL, httpHeaders: [String: String],
-        preserveASSMarkup: Bool, requested: [Int32?]?, cancel: CancelFlag
+        preserveASSMarkup: Bool, requested: [Int32?]?, cancel: CancelFlag,
+        localInputFormat: String?
     ) throws -> [SidecarDecodeResult] {
+        if cancel.isCancelled { throw CancellationError() }
         let isHTTP = url.scheme == "http" || url.scheme == "https"
+        if let localInputFormat {
+            guard url.isFileURL, ["srt", "webvtt"].contains(localInputFormat) else {
+                throw SubtitleDecoderError.noSubtitleStream
+            }
+        }
 
         var formatContext: UnsafeMutablePointer<AVFormatContext>?
         var avioReader: AVIOReader?
@@ -389,7 +399,14 @@ enum SubtitleDecoder {
         } else {
             var ctx: UnsafeMutablePointer<AVFormatContext>?
             let urlString = url.isFileURL ? url.path : url.absoluteString
-            let ret = avformat_open_input(&ctx, urlString, nil, nil)
+            var options: OpaquePointer?
+            defer { av_dict_free(&options) }
+            let inputFormat = localInputFormat.flatMap { av_find_input_format($0) }
+            if localInputFormat != nil {
+                guard inputFormat != nil else { throw SubtitleDecoderError.noDecoder }
+                av_dict_set(&options, "protocol_whitelist", "file", 0)
+            }
+            let ret = avformat_open_input(&ctx, urlString, inputFormat, &options)
             guard ret == 0, ctx != nil else {
                 throw SubtitleDecoderError.openFailed(code: ret)
             }
@@ -454,9 +471,28 @@ enum SubtitleDecoder {
             if let decoder = decodersByStream[pkt.pointee.stream_index] {
                 // Audit FEA-101 / SUB-105: this loop reads libavformat directly, past Demuxer's bound.
                 if let stream = fmt.pointee.streams[Int(pkt.pointee.stream_index)] {
-                    SourceTimestampBounds.sanitize(pkt, timeBase: stream.pointee.time_base)
+                    if localInputFormat != nil {
+                        let base = stream.pointee.time_base
+                        let scale = Double(base.num) / Double(base.den)
+                        let start = Double(pkt.pointee.pts) * scale
+                        let end = start + Double(pkt.pointee.duration) * scale
+                        guard pkt.pointee.pts != Int64.min, start.isFinite, end.isFinite,
+                              start >= 0, end > start, end <= 86_400 else {
+                            trackedPacketFree(&pktPtr)
+                            throw SubtitleDecoderError.noSubtitleStream
+                        }
+                    }
+                    let repaired = SourceTimestampBounds.sanitize(pkt, timeBase: stream.pointee.time_base)
+                    if localInputFormat != nil && repaired {
+                        trackedPacketFree(&pktPtr)
+                        throw SubtitleDecoderError.noSubtitleStream
+                    }
                 }
                 decoder.decode(packet: pkt)
+                if localInputFormat != nil && decoder.cues.count > 10_000 {
+                    trackedPacketFree(&pktPtr)
+                    throw SubtitleDecoderError.noSubtitleStream
+                }
             }
 
             av_packet_unref(pkt)
@@ -464,6 +500,7 @@ enum SubtitleDecoder {
         }
 
         for decoder in decodersByStream.values { decoder.flush(cancel: cancel) }
+        if cancel.isCancelled { throw CancellationError() }
 
         return resolved.compactMap { decodersByStream[$0]?.result }
     }
